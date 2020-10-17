@@ -1,7 +1,7 @@
 ---
 title: "Assignment1"
 author: "Mireille Vargas"
-date: "r format(Sys.Date(), '%B %d, %Y')"
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
 output: html_document
 ---
 
