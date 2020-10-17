@@ -1,0 +1,273 @@
+---
+title: "Assignment1"
+author: "Mireille Vargas"
+date: "'r format(Sys.Date(), '%B %d, %Y')'"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/mirei/OneDrive/Documents/GitHub/ESS218X")
+```
+
+
+```{r}
+library(tidyverse)
+library(plotly)
+library(sf)
+library(tigris)
+library(leaflet)
+library("dplyr")
+library("plyr")
+library("readr")
+library(censusapi)
+library("rgdal")
+library("sp")
+library(zoo)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r}
+years <- 2017:2020
+quarters <- 1:4
+types <- c("Electric", "Gas")
+
+pge_Elec_Gas_All <- NULL
+
+for (quarter in quarters){
+  for (year in years){
+    #if year == 2020 #if statement to seperate 2020 quarters 1 and 2, would say if 2020 and quarter is 3 or 4 then next
+    if (year == 2020 & quarter == 3){
+      next()
+    }
+    if (year == 2020 & quarter == 4){
+      next()
+    }
+    for (type in types){
+      filename <-
+        paste0(
+          "PGE_",
+          year,
+          "_Q",
+          quarter,
+          "_",
+          type,
+          "UsageByZip.csv"
+        )
+      #print(filename)
+    temp <- read_csv(filename)
+temp$TOTALkBTU <- NULL
+temp$AVERAGEkBTU <- NULL
+temp$DATE <- as.yearmon(paste(temp$YEAR, temp$MONTH), "%Y %m")
+if (type == "Gas"){
+  temp$TOTALkBTU <- temp$TOTALTHM * 100 
+  temp$AVERAGEkBTU <- temp$TOTALkBTU/temp$TOTALCUSTOMERS
+  temp$TOTALTHM <- NULL
+  temp$AVERAGETHM <- NULL
+}
+if (type == "Electric"){
+  temp$TOTALkBTU <- temp$TOTALKWH * 3.4121416
+  temp$AVERAGEkBTU <- temp$TOTALkBTU/temp$TOTALCUSTOMERS
+  temp$TOTALKWH <- NULL
+  temp$AVERAGEKWH <- NULL
+}
+pge_Elec_Gas_All <- rbind(pge_Elec_Gas_All, temp)
+    
+    }
+  }
+saveRDS(pge_Elec_Gas_All, "pge_Elec_Gas_All.rds")  
+}
+head("pge_Elec_Gas_All.rds")
+```
+
+Filtering the data to have only the Bay Area zipcodes. 
+```{r}
+options(tigris_use_cache = FALSE)
+ca_counties <- counties("CA", cb = T, progress_bar = F)
+#st_drivers()
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  ca_counties %>%
+  filter(NAME %in% bay_county_names)
+
+usa_zips <- 
+  zctas(cb = T, progress_bar = F)
+#creates a dataframe of all bay area zipcodes
+bay_zips <-
+  usa_zips %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(usa_zips %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+# filter(pge_Elec_Gas_All$ZIPCODE %in% bay_zips$ZCTA5CE10)
+bayAreaPGE<- subset(pge_Elec_Gas_All, pge_Elec_Gas_All$ZIPCODE %in% bay_zips$ZCTA5CE10)
+```
+
+Creating the filtered data set.
+```{r}
+bayAreaPGE_elec_final <-
+  bayAreaPGE %>%
+  # subset(pge_Elec_Gas_All, pge_Elec_Gas_All$ZIPCODE %in% bay_zips$ZCTA5CE10)%>%
+  filter( #choose only these customer classes
+    CUSTOMERCLASS %in%
+      c(
+        "Elec- Residential",
+        "Elec- Commercial", "Gas- Residential", "Gas- Commercial" #I could add gas data in here but I would have to change the subset
+      )
+
+  ) %>%
+  select(
+    #c(DATE, CUSTOMERCLASS, TOTALCUSTOMERS, TOTALkBTU) #include these columns
+    # !c(YEAR, MONTH, COMBINED, AVERAGEkBTU)
+    !c(COMBINED, AVERAGEkBTU)
+  ) %>%
+  #group_by(DATE, CUSTOMERCLASS) %>%
+  dplyr::group_by(DATE, CUSTOMERCLASS) %>%
+  #summarize(
+  dplyr::summarise(
+    TOTALkBTU =
+      sum(
+        TOTALkBTU,
+        na.rm = T
+      ),
+    TOTALCUSTOMERS =
+      sum(
+        TOTALCUSTOMERS,
+        na.rm = T
+      )
+  ) %>%
+  mutate(
+    AVERAGEkBTU =
+      TOTALkBTU/TOTALCUSTOMERS
+  )
+
+bayAreaPGE_elec_final
+
+```
+Create the graph
+```{r}
+pge_chart <-
+  bayAreaPGE_elec_final %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = DATE %>% factor(),
+      y = TOTALkBTU,
+      fill = CUSTOMERCLASS
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Date",
+    y = "kBTU",
+    title = "PG&E Bay Area Monthly Electricity and Gas Usage, 2017-2020",
+    fill = "Customer Class Type"
+  ) + 
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)#to shift the dates so they're visible
+    )
+
+pge_chart
+
+pge_chart %>% ggplotly()
+
+```
+
+Creating the dataset of COVID influence 
+one of the average KBTU consumption per month before covid (Mar-Jun), and one of the 2020 KBTU consumption in Mar-Jun. is there a way to combine the two data frames by subtracting the covid-era consumption values from pre-covid consumption (do left_join)
+```{r}
+#group by zipcode
+#percent change: (2020-2019/2019 * 100)
+bayAreaCOVID <-
+  bayAreaPGE %>%
+  filter(
+    YEAR %in% (2019:2020), MONTH %in% (1:5), CUSTOMERCLASS == "Elec- Residential"
+    ) %>%
+  mutate(
+    ZIPCODE = ZIPCODE %>% as.character()
+    ) %>%
+  dplyr::group_by(ZIPCODE, YEAR) %>%
+  dplyr::summarise(
+    TOTALkBTU =
+      sum(
+        TOTALkBTU,
+        na.rm = T
+      )
+  ) %>%
+  right_join(
+    bay_zips %>% select(GEOID10),
+    by = c("ZIPCODE" = "GEOID10")
+  ) %>%
+  pivot_wider(
+    names_from = YEAR,
+    names_prefix = "kBTU",
+    values_from = TOTALkBTU
+  ) %>%
+  dplyr::filter(kBTU2019> 0) %>%
+  mutate(
+    COVID_influence =
+      ((kBTU2019 - kBTU2020)/ kBTU2019) * 100
+  ) %>%
+  # drop_na()%>%
+  st_as_sf()%>%
+  st_transform(4326) #%>%
+  # st_set_geometry(NULL) 
+
+
+bayAreaCOVID
+```
+
+Creating the map
+```{r}
+# class(bayAreaCOVID)
+res_pal <- colorNumeric(
+  palette = "Blues",
+  domain =
+    bayAreaCOVID$COVID_influence
+)
+
+leaflet() %>% #leaflet wants a spatial object
+  addTiles() %>%
+  addPolygons(
+    data = bayAreaCOVID,
+    fillColor = ~res_pal(COVID_influence),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~paste0(
+      round(COVID_influence),
+      "kBTU Percent Change in",
+      ZIPCODE
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  )%>%
+  addLegend(
+    data = bayAreaCOVID,
+    pal = res_pal,
+    values = ~COVID_influence,
+    title = "Percent Change in Residential<br>Electric Energy Usage possibly<br>due to COVID-19"
+)
+```
+
