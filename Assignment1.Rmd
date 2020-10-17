@@ -1,15 +1,16 @@
 ---
 title: "Assignment1"
 author: "Mireille Vargas"
-date: "'r format(Sys.Date(), '%B %d, %Y')'"
+date: "r format(Sys.Date(), '%B %d, %Y')"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-knitr::opts_knit$set(root.dir = "C:/Users/mirei/OneDrive/Documents/GitHub/ESS218X")
+knitr::opts_knit$set(root.dir = "C:/Users/mirei/OneDrive/Documents/GitHub/ESS218X") #Since this assignment uses Github, I made sure to knit my assignment to the working directory since sometimes I would have issues if I didn't.
 ```
 
+First step to this assignment is to list all the libraries that will be used.
 
 ```{r}
 library(tidyverse)
@@ -26,20 +27,18 @@ library("sp")
 library(zoo)
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
+After downloading the data, I created a stacked dataset that combines all the various csv files.
 
 ```{r}
 years <- 2017:2020
-quarters <- 1:4
-types <- c("Electric", "Gas")
+quarters <- 1:4 #there are four quarters in each year
+types <- c("Electric", "Gas") #Electric and Gas each have different sections: residential, commercial, etc
 
-pge_Elec_Gas_All <- NULL
+pge_Elec_Gas_All <- NULL #creating the empty dataset
 
 for (quarter in quarters){
   for (year in years){
-    #if year == 2020 #if statement to seperate 2020 quarters 1 and 2, would say if 2020 and quarter is 3 or 4 then next
+    #since there are no quarter 3 and4 for year 2020 I need to make sure that the loop does not search for these specific quarters
     if (year == 2020 & quarter == 3){
       next()
     }
@@ -57,18 +56,17 @@ for (quarter in quarters){
           type,
           "UsageByZip.csv"
         )
-      #print(filename)
     temp <- read_csv(filename)
-temp$TOTALkBTU <- NULL
-temp$AVERAGEkBTU <- NULL
+temp$TOTALkBTU <- NULL #creating an empty column
+temp$AVERAGEkBTU <- NULL #creating an empty column
 temp$DATE <- as.yearmon(paste(temp$YEAR, temp$MONTH), "%Y %m")
-if (type == "Gas"){
+if (type == "Gas"){ #calculating the kBTU (total and average) for gas
   temp$TOTALkBTU <- temp$TOTALTHM * 100 
   temp$AVERAGEkBTU <- temp$TOTALkBTU/temp$TOTALCUSTOMERS
   temp$TOTALTHM <- NULL
   temp$AVERAGETHM <- NULL
 }
-if (type == "Electric"){
+if (type == "Electric"){ #calculating the kBTU (total and average) for electricity
   temp$TOTALkBTU <- temp$TOTALKWH * 3.4121416
   temp$AVERAGEkBTU <- temp$TOTALkBTU/temp$TOTALCUSTOMERS
   temp$TOTALKWH <- NULL
@@ -83,7 +81,7 @@ saveRDS(pge_Elec_Gas_All, "pge_Elec_Gas_All.rds")
 head("pge_Elec_Gas_All.rds")
 ```
 
-Filtering the data to have only the Bay Area zipcodes. 
+Once I have created the stacked dataset, I will filter the data to have only the Bay Area zipcodes. 
 ```{r}
 options(tigris_use_cache = FALSE)
 ca_counties <- counties("CA", cb = T, progress_bar = F)
@@ -115,12 +113,11 @@ bay_zips <-
   st_set_geometry(NULL) %>% 
   left_join(usa_zips %>% select(GEOID10)) %>% 
   st_as_sf()
-
-# filter(pge_Elec_Gas_All$ZIPCODE %in% bay_zips$ZCTA5CE10)
+#now actually filtering the datasets that have the Bay Area zipcodes
 bayAreaPGE<- subset(pge_Elec_Gas_All, pge_Elec_Gas_All$ZIPCODE %in% bay_zips$ZCTA5CE10)
 ```
 
-Creating the filtered data set.
+After creating a dataset that only includes the Bay area zipcodes, I will filter the dataset to only include gas and electric for residential and commercial use. 
 ```{r}
 bayAreaPGE_elec_final <-
   bayAreaPGE %>%
@@ -134,13 +131,9 @@ bayAreaPGE_elec_final <-
 
   ) %>%
   select(
-    #c(DATE, CUSTOMERCLASS, TOTALCUSTOMERS, TOTALkBTU) #include these columns
-    # !c(YEAR, MONTH, COMBINED, AVERAGEkBTU)
-    !c(COMBINED, AVERAGEkBTU)
+    !c(COMBINED, AVERAGEkBTU)#don't include these columns
   ) %>%
-  #group_by(DATE, CUSTOMERCLASS) %>%
-  dplyr::group_by(DATE, CUSTOMERCLASS) %>%
-  #summarize(
+  dplyr::group_by(DATE, CUSTOMERCLASS) %>% #grouping by residential or commercial gas/electric and by date/month
   dplyr::summarise(
     TOTALkBTU =
       sum(
@@ -162,6 +155,8 @@ bayAreaPGE_elec_final
 
 ```
 Create the graph
+
+Now that I have my dataset that shows the monthly total kBTUs of residential and commercial electricity and gas consumption for the Bay Area from 2017 to 2020 quarter 2, I will create a bar graph to visualize this.
 ```{r}
 pge_chart <-
   bayAreaPGE_elec_final %>% 
@@ -191,11 +186,13 @@ pge_chart %>% ggplotly()
 
 ```
 
-Creating the dataset of COVID influence 
-one of the average KBTU consumption per month before covid (Mar-Jun), and one of the 2020 KBTU consumption in Mar-Jun. is there a way to combine the two data frames by subtracting the covid-era consumption values from pre-covid consumption (do left_join)
+Q:Comment on any observable changes in energy consumption that may be attributable to the COVID-19 pandemic.
+A: Looking at the total kBTUs for March from 2019 to 2020, the electricity usage from commercial decreased by 357.5 million kBTU (total consumption) which could be due to businesses having to close down towards the middle of March. 
+In regards to residential, electricity usage increased by roughly 150=1.2 million kBTU (total kBTU) and gas usage also increased 96.6 million kBTU. This increase in consumption can be due to people being laid off and activities being shut down which led to people staying at home longer than usual. 
+
+For the second part of the assignment, I created a dataset that calculates the change of electricity consumption due to COVID-19. I assumed that the best way to do this was to find the change of electricity consumption by subtracting 2020's data with 2019's data and dividing that value by 2019's data value. I also assumed that the way to look at neighborhoods who experienced the greatest change in electricity consumption was to focus on residential consumption specifically as oppose to all of electricity consumption. I decided to keep the values as kBTU to make it easier to analyze. I removed any values that had 0 for 2019's electricity residential usage.
 ```{r}
-#group by zipcode
-#percent change: (2020-2019/2019 * 100)
+
 bayAreaCOVID <-
   bayAreaPGE %>%
   filter(
@@ -226,18 +223,14 @@ bayAreaCOVID <-
     COVID_influence =
       ((kBTU2019 - kBTU2020)/ kBTU2019) * 100
   ) %>%
-  # drop_na()%>%
   st_as_sf()%>%
-  st_transform(4326) #%>%
-  # st_set_geometry(NULL) 
-
+  st_transform(4326)
 
 bayAreaCOVID
 ```
 
-Creating the map
+Once I created the dataset, I created the map to visualize the data.
 ```{r}
-# class(bayAreaCOVID)
 res_pal <- colorNumeric(
   palette = "Blues",
   domain =
@@ -270,4 +263,4 @@ leaflet() %>% #leaflet wants a spatial object
     title = "Percent Change in Residential<br>Electric Energy Usage possibly<br>due to COVID-19"
 )
 ```
-
+Based on this map, the neighborhood that experienced the greatest change was a neighborhood in Oakland with a 63% change.
