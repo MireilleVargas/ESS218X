@@ -1,0 +1,381 @@
+---
+title: "Assignment 3"
+author: "Mireille Vargas"
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/mirei/OneDrive/Documents/GitHub/ESS218X") #Since this assignment uses Github, I made sure to knit my assignment to the working directory since sometimes I would have issues if I didn't.
+```
+
+I will be using percent of households in poverty as my outcome variable (dependent variable). For the household level with the PUMS data, I am using "means of transportation" and "Household language" as my two independent variables. 
+For the census tract level, I will be using public transportation (those walking and using public transportation) and my other variable as those who do not speak English well. For public transportation, these names are under "B08119_037E" for those who walk to work, and "B08119_028E" for those who take public transportation for work (excluding taxicabs). For the independent variable of "speaking English not very well", I will be using "B16005F_011E" which is the number of foreign borns who speak English less than very well and "B16005F_006E" who are native borns who speak English less than very well. 
+
+
+The following articles were used to decide on access to internet and ability to speak english well and its relationship with income:
+https://repository.library.georgetown.edu/bitstream/handle/10822/709850/Scott_georgetown_0076M_12514.pdf?sequence=1&isAllowed=y
+https://edsource.org/2017/many-children-whose-parents-speak-a-language-other-than-english-arent-enrolling-in-preschool/589062 
+
+```{r}
+library(tidyverse)
+library(plotly)
+library(sf)
+library(tigris)
+library(leaflet)
+library("plyr")
+library("dplyr")
+library("readr")
+library(censusapi)
+library("rgdal")
+library("sp")
+library(zoo)
+library(tidycensus)
+library(corrplot)
+```
+
+
+
+```{r}
+# Add key to .Renviron
+Sys.setenv(CENSUS_KEY= "dc599aed525530a3e2e60f900f08f7ff374a0c96")
+# Reload .Renviron
+readRenviron("C:/Users/mirei/OneDrive/Desktop/.Renviron")
+# Check to see that the expected key is output in your R console
+Sys.getenv("CENSUS_KEY")
+```
+
+In the following chunk I am reading in the ACS data.
+
+```{r}
+acs_vars_2018_5yr <-
+  listCensusMetadata(
+    name = "2018/acs/acs5",
+    type = "variables"
+  )
+```
+
+Below I am reading in the PUMS data.
+```{r}
+pums_vars_2018 <- 
+  pums_variables %>%
+  filter(year == 2018, survey == "acs5")
+```
+
+I created pums_vars_2018_distinct_hh to have a dataset that looks at the PUMS data specifically at the housing level.
+```{r}
+pums_vars_2018_distinct_hh <- 
+  pums_vars_2018 %>%
+  distinct(var_code, var_label, data_type, level) %>% 
+  filter(level == "housing")
+```
+
+Now that I have my PUMS data, I will grab the specific data for ability to speak English, household income, and means of transportation using its corresponding var_code and limit the data to only include the Bay Area. Note: "means of transportation" and "ability to speak English" were calculated at the individual level as oppose to "household income" which was calculated at the household level.
+
+```{r}
+#census_api_key("c8aa67e4086b4b5ce3a8717f59faa9a28f611dab", install =TRUE)
+ca_pums <- get_pums(
+  variables = c(
+    "PUMA",
+    "NP",
+    "JWTR", #Means of transportation which is at the person level
+    "HINCP", #HOUSEHOLD INCOME
+    "ENG" #Ability to speak English is at the person level
+  ),
+  state = "CA",
+  year = 2018,
+  survey = "acs5",
+  recode = T
+)
+
+ca_pumas <-
+  pumas("CA", cb = T, progress_bar = F)
+
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+bay_pumas <-
+  ca_pumas %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(ca_pumas %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+bay_pums <-
+  ca_pums %>% 
+  filter(PUMA %in% bay_pumas$PUMACE10)
+```
+
+Since our "means of transportation" and "ability to speak English" are at the individual level, we will have to manipulate the data to have each respondent be part of a household as identified by SERIALNO (an automatic variable received through get_pums()). 
+
+```{r}
+bay_pums_regression <-
+  bay_pums %>% 
+  filter(SPORDER == 1) %>% 
+  mutate(
+    walk_PublicTransport = ifelse(
+      JWTR_label == "Bus or trolley bus" | JWTR_label == "Streetcar or trolley car (carro publico in Puerto Rico)" |  JWTR_label == "Subway or elevated" | JWTR_label == "Railroad" | JWTR_label == "Bicycle" | JWTR_label == "Walked", #not sure if I should include people who don't work
+      1,
+      0
+    ),
+    englishAbility = ifelse(
+      ENG_label == "Well" | ENG_label == "Not well" | ENG_label == "Not at all",
+      1,
+      0
+    )
+  )
+```
+
+
+Now I will create the multivariate regression with the weights WGTP for households (in regards to the means of transportation).
+```{r}
+model_pums <- lm(HINCP ~ walk_PublicTransport + englishAbility, bay_pums_regression, weights = WGTP)
+
+summary(model_pums)
+```
+
+
+
+For the ACS data, I want to specifically look at low income levels as my dependent variable. Articles have shown that the HUD now defines "low income" for a family of four in 2018 as those who make $117,400 in San Francisco, Marin, and San Mateo counties. In Santa Clara, making less than $94,000 is considered low income.  
+For my analysis, I classified low-income levels as households that make less than 100k.
+Source: https://abc7news.com/finance/report-$117k-a-year-considered-low-income-in-some-bay-area-counties/3664989/ 
+
+```{r}
+bay_multiple_tract <- 
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2018,
+    region = "tract:*",
+    regionin = "state:06+county:001,013,041,055,075,081,085,095,097", #specifies the bay area
+    vars = c(
+      "B19001_001E", #total household income
+      "B19001_002E", #Estimate!!Total!!Less than $10,000
+      "B19001_003E", #Estimate!!Total!!$10,000 to $14,999
+      "B19001_004E", #Estimate!!Total!!$15,000 to $19,999
+      "B19001_005E", #Estimate!!Total!!$20,000 to $24,999
+      "B19001_006E", #Estimate!!Total!!$25,000 to $29,999
+      "B19001_007E", #Estimate!!Total!!$30,000 to $34,999
+      "B19001_008E", #Estimate!!Total!!$35,000 to $39,999
+      "B19001_009E", #Estimate!!Total!!$40,000 to $44,999
+      "B19001_010E", #Estimate!!Total!!$45,000 to $49,999
+      "B19001_011E", #Estimate!!Total!!$50,000 to $59,999
+      "B19001_012E", #Estimate!!Total!!$60,000 to $74,999
+      "B19001_013E", #Estimate!!Total!!$75,000 to $99,999
+      "B08119_028E", #Estimate!!Total!!Public transportation (excluding taxicab)
+      "B08119_037E", #Estimate!!Total!!Walked
+      "B08119_001E", #Estimate!!Total in regards to transportation
+      "B16005F_011E", #Estimate!!Total!!Foreign born!!Speak another language!!Speak Enlgish less than very well
+      "B16005F_006E", #Estimate!!Total!!Native!!Speak another language!!Speak English less than "very well"
+      "B16005F_007E", #Estimate!!Total!!Foreign born
+      "B16005F_002E" #Estimate!!Total!!Native
+    )
+  ) %>% 
+  transmute(
+    tract = paste0(state, county, tract),
+    perc_transp = (B08119_028E + B08119_037E) / B08119_001E, #CHANGE BECAUSE VALUES ARE LOW! SWITCHING TO TRANSPORTATION
+    perc_under100k = (B19001_002E + B19001_003E + B19001_004E + B19001_005E + B19001_006E + B19001_007E + B19001_008E + B19001_009E + B19001_010E + B19001_011E + B19001_012E + B19001_013E) / B19001_001E,
+    perc_noEnglish = (B16005F_011E + B16005F_006E) / (B16005F_007E + B16005F_002E)
+  ) %>%
+  filter(
+    !is.na(perc_transp),
+    !is.na(perc_under100k),
+    !is.na(perc_noEnglish)
+  )
+```
+
+Now I'll create a correlation plot.
+```{r}
+correlationplot <- bay_multiple_tract %>% 
+  select(
+    perc_transp, 
+    perc_noEnglish,
+    perc_under100k
+  ) %>% 
+  cor()
+
+corrplot(
+  correlationplot, 
+  method = "number",
+  type = "upper"
+)
+```
+
+Creating the multivariable regression.
+```{r}
+model <- lm(perc_under100k ~ perc_transp + perc_noEnglish, bay_multiple_tract)
+
+summary(model)
+```
+
+Controlling for means of transportation, there appears to be a strong association between not speaking English well and being low income. In a similar regards, when controlling for Enlgish speaking proficiency, there is also a strong association between means of transportation and being low income (those who walk and take public transportation are associated with lower income).
+
+Now I will look at 2013 data:
+
+PUMS:
+
+```{r}
+pums_vars_2013 <- 
+  pums_variables %>%
+  filter(year == 2013, survey == "acs5")
+```
+
+```{r}
+ca_pums2013 <- get_pums(
+  variables = c(
+    "PUMA",
+    "NP",
+    "JWTR", #Means of transportation which is at the person level
+    "HINCP", #HOUSEHOLD INCOME
+    "ENG" #Ability to speak English is at the person level
+  ),
+  state = "CA",
+  year = 2018,
+  survey = "acs5",
+  recode = T
+)
+
+ca_pumas2013 <-
+  pumas("CA", cb = T, progress_bar = F)
+
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+bay_pumas2013 <-
+  ca_pumas2013 %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(ca_pumas2013 %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+bay_pums2013 <-
+  ca_pums2013 %>% 
+  filter(PUMA %in% bay_pumas2013$PUMACE10)
+```
+
+
+
+
+```{r}
+bay_pums_regression2013 <-
+  bay_pums2013 %>% 
+  filter(SPORDER == 1) %>% 
+  mutate(
+    walk_PublicTransport = ifelse(
+      JWTR_label == "Bus or trolley bus" | JWTR_label == "Streetcar or trolley car (carro publico in Puerto Rico)" |  JWTR_label == "Subway or elevated" | JWTR_label == "Railroad" | JWTR_label == "Bicycle" | JWTR_label == "Walked", #not sure if I should include people who don't work
+      1,
+      0
+    ),
+    englishAbility = ifelse(
+      ENG_label == "Well" | ENG_label == "Not well" | ENG_label == "Not at all",
+      1,
+      0
+    )
+  )
+```
+
+```{r}
+model_pums2013 <- lm(HINCP ~ walk_PublicTransport + englishAbility, bay_pums_regression2013, weights = WGTP)
+
+summary(model_pums2013)
+```
+
+
+ACS:
+```{r}
+bay_multiple_tract2013 <- 
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2013,
+    region = "tract:*",
+    regionin = "state:06+county:001,013,041,055,075,081,085,095,097", #specifies the bay area
+    vars = c(
+      "B19001_001E", #total household income
+      "B19001_002E", #Estimate!!Total!!Less than $10,000
+      "B19001_003E", #Estimate!!Total!!$10,000 to $14,999
+      "B19001_004E", #Estimate!!Total!!$15,000 to $19,999
+      "B19001_005E", #Estimate!!Total!!$20,000 to $24,999
+      "B19001_006E", #Estimate!!Total!!$25,000 to $29,999
+      "B19001_007E", #Estimate!!Total!!$30,000 to $34,999
+      "B19001_008E", #Estimate!!Total!!$35,000 to $39,999
+      "B19001_009E", #Estimate!!Total!!$40,000 to $44,999
+      "B19001_010E", #Estimate!!Total!!$45,000 to $49,999
+      "B19001_011E", #Estimate!!Total!!$50,000 to $59,999
+      "B19001_012E", #Estimate!!Total!!$60,000 to $74,999
+      "B19001_013E", #Estimate!!Total!!$75,000 to $99,999
+      "B08119_028E", #Estimate!!Total!!Public transportation (excluding taxicab)
+      "B08119_037E", #Estimate!!Total!!Walked
+      "B08119_001E", #Estimate!!Total in regards to transportation
+      "B16005F_011E", #Estimate!!Total!!Foreign born!!Speak another language!!Speak Enlgish less than very well
+      "B16005F_006E", #Estimate!!Total!!Native!!Speak another language!!Speak English less than "very well"
+      "B16005F_007E", #Estimate!!Total!!Foreign born
+      "B16005F_002E" #Estimate!!Total!!Native
+    )
+  ) %>% 
+  transmute(
+    tract = paste0(state, county, tract),
+    perc_transp = (B08119_028E + B08119_037E) / B08119_001E, #CHANGE BECAUSE VALUES ARE LOW! SWITCHING TO TRANSPORTATION
+    perc_under100k = (B19001_002E + B19001_003E + B19001_004E + B19001_005E + B19001_006E + B19001_007E + B19001_008E + B19001_009E + B19001_010E + B19001_011E + B19001_012E + B19001_013E) / B19001_001E,
+    perc_noEnglish = (B16005F_011E + B16005F_006E) / (B16005F_007E + B16005F_002E)
+  ) %>%
+  filter(
+    !is.na(perc_transp),
+    !is.na(perc_under100k),
+    !is.na(perc_noEnglish)
+  )
+```
+
+Creating the correlation plot.
+```{r}
+correlationplot2013_tract <- bay_multiple_tract2013 %>% 
+  select(
+    perc_transp, 
+    perc_noEnglish,
+    perc_under100k
+  ) %>% 
+  cor()
+
+corrplot(
+  correlationplot2013_tract, 
+  method = "number",
+  type = "upper"
+)
+```
+
+Creating the multivariate regression for 2013 tract data.
+```{r}
+model2013_tract <- lm(perc_under100k ~ perc_transp + perc_noEnglish, bay_multiple_tract2013)
+
+summary(model2013_tract)
+```
+
